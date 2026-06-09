@@ -4,7 +4,6 @@ library(tidyverse)
 library(taxizedb)
 library(parallel)
 
-# Read configuration file - treat empty strings as NA
 # Read configuration file - handle quotes and NA properly
 config <- read.csv("../data/dataset.csv", 
                    stringsAsFactors = FALSE, 
@@ -188,3 +187,24 @@ species_count <- file %>%
   nrow()
 
 print(paste("Number of species with size and measured (non-estimated) mass:", species_count))
+
+
+# Link taxonomy
+insect_mass = file; colnames(insect_mass)[c(1,7)] = c("species", "source_doi") # Create a duplicate file 
+ids <- name2taxid(unique(insect_mass$species), out_type="summary", db = "gbif") # Get ncbi id for taxonomy from name
+classes = classification(ids$id) # output taxonomy from id
+
+process_df <- function(df) { 
+  df %>%
+    t() %>%
+    as_tibble() %>%
+    slice(-c(2, 3)) %>%
+    set_names(make.unique(as.character(df$rank))) %>%
+    as.data.frame(stringsAsFactors = FALSE)
+} # Function to reorder classification data
+processed_data <- mclapply(classes, process_df, mc.cores = detectCores()) # Apply function using multi-core lapply (it's faster)
+taxonomy <- bind_rows(processed_data) # Bind output rows
+
+taxonomy = taxonomy[, c("class", "order", "suborder", "family", "genus", "species")] # subset taxonomy
+insect_mass = merge(taxonomy, insect_mass, by = "species") # merge taxonomy with data
+insect_mass = insect_mass %>% filter(class == "Insecta") # reorder columns

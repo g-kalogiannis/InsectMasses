@@ -64,13 +64,18 @@ bodymass = function(file, species, value, trait, metric, state, estimate, doi){
   if (!trait %in% c("mass", "size")){
     stop("Invalid trait")
   }
-  tmp  = data.frame(Species = species, # Combine inputs into data frame
+  
+  # Fix encoding issues before processing
+  species = iconv(species, from = "latin1", to = "UTF-8", sub = "")
+  
+  tmp  = data.frame(Species = species,
                       Trait = rep(trait, length(species)),
                       Value = as.numeric(value),
                       Metric = rep(metric, length(species)),
                       Collection = rep(state, length(species)), 
                       Estimate = rep(estimate, length(species)),
-                      doi = rep(doi, length(species))
+                      doi = rep(doi, length(species)),
+                      stringsAsFactors = FALSE  # Add this
                       ) 
   tmp$Species = sub("_", " ", tmp$Species)
   tmp = na.omit(check_data(data = tmp))
@@ -136,7 +141,7 @@ adjust_values <- function(data) {
 # Data entry
 file = c()
 file = bodymass(file, coleoptera$Species, coleoptera$`Mass (mg)`, "mass", "mg", "Live", "Yes", "https://doi.org/10.7717/peerj.12799/supp-1")
-# file = bodymass(file, animaltraits$species[animaltraits$class == "Insecta"], animaltraits$body.mass[animaltraits$class == "Insecta"], "mass","kg", "NA", "No", "https://animaltraits.org/") # Excluded due to poor data origins (wikipedia etc.)
+file = bodymass(file, animaltraits$species[animaltraits$class == "Insecta"], animaltraits$body.mass[animaltraits$class == "Insecta"], "mass","kg", "NA", "No", "https://animaltraits.org/") # Excluded due to poor data origins (wikipedia etc.)
 file = bodymass(file, kuhsel$Species, kuhsel$Dry.mass..mg., "mass","mg", "Dry", "No", "https://doi.org/10.1111/1744-7917.12362")
 file = bodymass(file, orthoptera$Species, orthoptera$Live.Weight..g., "mass","g", "Live", "No", "https://doi.org/10.1665/1082-6467-17.2.301")
 file = bodymass(file, bruckner$Species, bruckner$body.mass, "mass","mg", "Dry", "NA", "https://doi.org/10.1371/journal.pone.0175001")
@@ -144,17 +149,19 @@ file = bodymass(file, kinsella$SPECIES, kinsella$PRED_DRY_MASS, "mass","mg", "Dr
 file = bodymass(file, horne$Species, horne$Dry.Mass..mg., "mass","mg", "Dry", "No", "https://doi.org/10.1111/1365-2435.13031")
 file = bodymass(file, pollimetry_dataset$Species, pollimetry_dataset$Spec.wgt, "mass","mg", "Dry", "NA", "https://doi.org/10.1002/ece3.4835")
 file = bodymass(file, leiva$species[leiva$class == "Insecta"], leiva$body_mass[leiva$class == "Insecta"], "mass","mg", "NA", "NA", "https://doi.org/10.1098/rstb.2019.0035")
-# file = bodymass(file, woodcock$Species, woodcock$Mass, "mass", "mg", "Dry", "No", "https://doi.org/10.5285/78408af3-452f-41af-95f3-ffc13b05c232") # Data differs significantly within species - unsure of quality
+file = bodymass(file, woodcock$Species, woodcock$Mass, "mass", "mg", "Dry", "No", "https://doi.org/10.5285/78408af3-452f-41af-95f3-ffc13b05c232") # Data differs significantly within species - unsure of quality
 file = bodymass(file, brose$Taxonomy.consumer[brose$Metabolic.category.consumer == "invertebrate"], brose$Mean.mass..g..consumer[brose$Metabolic.category.consumer == "invertebrate"], "mass", "g", "Live", "Yes", "https://doi.org/10.1890/05-0379")
-# file = bodymass(file, gtdrift$species[gtdrift$life_history_traits == "weight_kg"], gtdrift$value[gtdrift$life_history_traits == "weight_kg"], "mass","kg", "NA", "NA", "https://doi.org/10.1101/2024.01.23.576799") # Excluded due to poor data origins (wikipedia etc.)
+file = bodymass(file, gtdrift$species[gtdrift$life_history_traits == "weight_kg"], gtdrift$value[gtdrift$life_history_traits == "weight_kg"], "mass","kg", "NA", "NA", "https://doi.org/10.1101/2024.01.23.576799") # Excluded due to poor data origins (wikipedia etc.)
 
-# file = bodymass(file, gtdrift$species[gtdrift$life_history_traits == "length_cm"], gtdrift$value[gtdrift$life_history_traits == "length_cm"], "size","cm", "NA", "NA", "https://doi.org/10.1101/2024.01.23.576799") # Excluded due to poor data origins (wikipedia etc.)
+file = bodymass(file, gtdrift$species[gtdrift$life_history_traits == "length_cm"], gtdrift$value[gtdrift$life_history_traits == "length_cm"], "size","cm", "NA", "NA", "https://doi.org/10.1101/2024.01.23.576799") # Excluded due to poor data origins (wikipedia etc.)
 file = bodymass(file, opdb$GenusSpecies, opdb$body_lengths, "size", "mm", "NA", "Yes", "https://doi.org/10.1038/s41597-019-0318-9")
 file = bodymass(file, mwelling$`Taxa name`, mwelling$mean_row, "size", "mm", "NA", "Yes", "https://doi.org/10.1038/s41597-020-00697-7")
+
 file = bodymass(file, leptraits$Species, leptraits$FW_U, "size", "cm", "NA", "Yes", "https://doi.org/10.1038/s41597-022-01473-5")
+
 file = bodymass(file, hagge$species, hagge$body_length, "size", "mm", "NA", "No", "https://doi.org/10.5061/dryad.2fqz612p3")
 file = bodymass(file, gillespie$Species, gillespie$`Mean body size (mm)`, "size", "mm", "NA", "No", "https://doi.org/10.1002%2Fece3.2732")
-# file = bodymass(file, arthropodtraits$SpeciesID, arthropodtraits$Body_Size, "size", "mm", "NA", "NA", "https://doi.org/10.1038/sdata.2015.13") # Excluded due to poor data origins (wikipedia etc.)
+file = bodymass(file, arthropodtraits$SpeciesID, arthropodtraits$Body_Size, "size", "mm", "NA", "NA", "https://doi.org/10.1038/sdata.2015.13") # Excluded due to poor data origins (wikipedia etc.)
 
 file = bodymass(file, white$Species, white$max.mass.g, "mass", "g", "Live", "No", "https://doi.org/10.1126/science.abm7649")
 file = bodymass(file, ehnes$Species, ehnes$weight..mg., "mass", "mg", "Live", "No", "https://doi.org/10.1111/j.1461-0248.2011.01660.x")

@@ -1,0 +1,380 @@
+---
+title: "Insect Body Mass & Size Database — Assembly and Exploration"
+author: ""
+date: "`r Sys.Date()`"
+output:
+  html_document:
+    toc: true
+    toc_float: true
+    theme: flatly
+    code_folding: hide
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(
+  echo    = TRUE,
+  warning = FALSE,
+  message = FALSE,
+  fig.width  = 9,
+  fig.height = 5
+)
+```
+
+# 1. Introduction
+
+This document describes the assembly, cleaning, and initial exploration of a
+multi-source insect body mass and size database. Data are drawn from a
+configuration file (`dataset.csv`) that specifies the path, format, and
+metadata for each contributing dataset. All records are standardised into a
+common schema before taxonomic annotation via ncbi and filtering to Insecta.
+
+---
+
+# 2. Setup
+
+```{r packages}
+library(readxl)
+library(tidyverse)
+library(taxizedb)
+library(parallel)
+```
+
+---
+
+# 3. Data Loading
+
+## 3.1 Configuration
+
+The configuration file drives all downstream loading. Each row describes one
+source dataset: its file path, format, relevant columns, trait type, units,
+and collection/estimation metadata.
+
+```{r load-config}
+config <- read.csv("../data/dataset.csv",
+                   stringsAsFactors = FALSE,
+                   na.strings       = c("", "NA"),
+                   quote            = "\"",
+                   strip.white      = TRUE)
+
+cat(sprintf("Configuration file loaded: %d datasets described.\n", nrow(config)))
+knitr::kable(
+  config %>% select(dataset_name, file_type, trait, metric, state, estimate, doi),
+  caption = "First 10 rows of the configuration file"
+)
+```
+
+## 3.2 Helper Functions
+
+```{r helper-functions}
+load_dataset <- function(row) {
+  if (row$file_type == "manual") return(NULL)
+  cat(paste("Loading:", row$dataset_name, "\n"))
+
+  if (row$file_type == "csv") {
+    sep_char <- switch(as.character(row$separator),
+                       "comma" = ",", "tab" = "\t", ",")
+    data <- if (!is.na(row$encoding))
+      read.csv(row$file_path, sep = sep_char, encoding = row$encoding)
+    else
+      read.csv(row$file_path, sep = sep_char)
+
+  } else if (row$file_type == "xlsx") {
+    sheet_num <- ifelse(is.na(row$sheet), 1, as.numeric(row$sheet))
+    data <- read_xlsx(row$file_path, sheet = sheet_num)
+
+  } else if (row$file_type == "rdata") {
+    env      <- new.env()
+    load(row$file_path, envir = env)
+    obj_name <- ls(env)[1]
+    data     <- get(obj_name, envir = env)
+  }
+
+  if (!is.na(row$post_processing)) {
+    if (row$post_processing == "calculate_mean_row") {
+      columns       <- names(data)[4:224]
+      data[data == "NA"] <- NA
+      data[columns] <- lapply(data[columns], as.numeric)
+      data$mean_row <- rowMeans(
+        data[, c("FoL_var_male_average", "FoL_var_female_average",
+                 "FoL_HR_average", "FoL_Ten_average")], na.rm = TRUE)
+    } else if (row$post_processing == "fix_header") {
+      colnames(data) <- data[2, ]
+      data           <- data[-c(1:2), ]
+    }
+  }
+
+  if (!is.na(row$filter_condition))
+    data <- data %>% filter(eval(parse(text = row$filter_condition)))
+
+  list(data = data, config = row)
+}
+
+check_data <- function(data) {
+  data <- data %>%
+    filter(complete.cases(data$Species),
+           !grepl("[0-9]|(sp|spp)$|(sp\\.|spp\\.)", data$Species),
+           Value > 0)
+  data$Species <- str_replace_all(data$Species, "\\s*\\([^\\)]+\\)", "")
+  data
+}
+
+bodymass <- function(file, species, value, trait, metric, state, estimate, doi) {
+  state    <- ifelse(is.na(state),    "NA", state)
+  estimate <- ifelse(is.na(estimate), "NA", estimate)
+  doi      <- ifelse(is.na(doi),      "NA", doi)
+
+  if (!state    %in% c("Dry", "Live", "NA")) stop("Invalid collection type.")
+  if (!estimate %in% c("Yes", "No",   "NA")) stop("Invalid estimate type.")
+  if (!metric   %in% c("mg", "g", "kg", "cm", "mm")) stop("Invalid metric.")
+  if (!trait    %in% c("mass", "size")) stop("Invalid trait.")
+
+  species <- iconv(species, from = "latin1", to = "UTF-8", sub = "")
+
+  tmp <- data.frame(
+    Species    = species,
+    Trait      = rep(trait,    length(species)),
+    Value      = as.numeric(value),
+    Metric     = rep(metric,   length(species)),
+    Collection = rep(state,    length(species)),
+    Estimate   = rep(estimate, length(species)),
+    doi        = rep(doi,      length(species)),
+    stringsAsFactors = FALSE
+  )
+  tmp$Species <- sub("_", " ", tmp$Species)
+  tmp         <- na.omit(check_data(tmp))
+  rbind(file, tmp)
+}
+```
+
+## 3.3 Ingestion Loop
+
+```{r ingest, results='hide'}
+file <- c()
+
+for (i in seq_len(nrow(config))) {
+  row <- config[i, ]
+
+  if (row$file_type == "manual") next
+
+  tryCatch({
+    info <- load_dataset(row)
+    if (is.null(info)) next
+    file <- bodymass(file,
+                     info$data[[info$config$species_col]],
+                     info$data[[info$config$value_col]],
+                     info$config$trait,   info$config$metric,
+                     info$config$state,   info$config$estimate,
+                     info$config$doi)
+  }, error = function(e)
+    cat(paste("Error loading", row$dataset_name, ":", e$message, "\n")))
+}
+```
+
+---
+
+# 4. Raw Dataset Overview
+
+```{r raw-summary}
+cat(sprintf("Total records      : %d\n",         nrow(file)))
+cat(sprintf("Unique species     : %d\n",          n_distinct(file$Species)))
+cat(sprintf("Traits represented : %s\n",
+            paste(unique(file$Trait), collapse = ", ")))
+cat(sprintf("Metrics represented: %s\n",
+            paste(unique(file$Metric), collapse = ", ")))
+```
+
+```{r raw-table}
+knitr::kable(
+  file %>%
+    group_by(Trait, Metric, Collection, Estimate) %>%
+    summarise(n_records = n(), n_species = n_distinct(Species), .groups = "drop") %>%
+    arrange(Trait, Metric),
+  caption = "Record counts by trait, metric, collection state, and estimate flag"
+)
+```
+
+## 4.1 Records per Source
+
+```{r records-per-source, fig.cap="Number of records contributed by each source DOI (top 20)."}
+file %>%
+  count(doi, sort = TRUE) %>%
+  slice_head(n = 20) %>%
+  mutate(doi = str_trunc(doi, 55)) %>%
+  ggplot(aes(x = reorder(doi, n), y = n)) +
+  geom_col(fill = "steelblue", alpha = 0.85) +
+  coord_flip() +
+  labs(x = NULL, y = "Number of records",
+       title = "Top 20 contributing sources") +
+  theme_minimal(base_size = 11)
+```
+
+## 4.2 Value Distributions
+
+```{r value-dist, fig.cap="Log10-transformed value distributions split by trait and metric."}
+file %>%
+  mutate(log_value = log10(Value)) %>%
+  ggplot(aes(x = log_value, fill = Metric)) +
+  geom_histogram(bins = 50, alpha = 0.75, colour = "white") +
+  facet_wrap(~Trait, scales = "free") +
+  labs(x = "log10(Value)", y = "Count",
+       title = "Distribution of raw measurements by trait") +
+  theme_minimal(base_size = 11)
+```
+
+## 4.3 Species Coverage — Paired Measurements
+
+Species with both a measured (non-estimated) size **and** a measured mass are
+the most analytically valuable for allometric modelling.
+
+```{r paired-coverage}
+species_count <- file %>%
+  filter(Estimate %in% c("Yes", "No")) %>%
+  group_by(Species) %>%
+  filter(
+    any(Trait == "size" & Estimate == "No") &
+    any(Trait == "mass" & Estimate == "No")
+  ) %>%
+  distinct(Species) %>%
+  nrow()
+
+cat(sprintf(
+  "Species with both measured (non-estimated) size AND mass: %d\n",
+  species_count))
+```
+
+---
+
+# 5. Taxonomic Annotation
+
+Species names are resolved against ncbi via `taxizedb` to retrieve class,
+order, suborder, family, genus, and species-level taxonomy. The dataset is
+then filtered to **Insecta**.
+
+```{r taxonomy, cache=TRUE}
+insect_mass <- file
+colnames(insect_mass)[c(1, 7)] <- c("species", "source_doi")
+
+ids      <- name2taxid(unique(insect_mass$species),
+                       out_type = "summary", db = "ncbi")
+classes  <- classification(ids$id)
+
+process_df <- function(df) {
+  df %>%
+    t() %>%
+    as_tibble() %>%
+    slice(-c(2, 3)) %>%
+    set_names(make.unique(as.character(df$rank))) %>%
+    as.data.frame(stringsAsFactors = FALSE)
+}
+
+processed_data <- mclapply(classes, process_df, mc.cores = detectCores())
+taxonomy       <- bind_rows(processed_data)
+
+taxonomy    <- taxonomy[, c("class", "order", "suborder",
+                             "family", "genus", "species")]
+insect_mass <- merge(taxonomy, insect_mass, by = "species")
+insect_mass <- insect_mass %>% filter(class == "Insecta")
+
+cat(sprintf("Records after filtering to Insecta: %d\n",    nrow(insect_mass)))
+cat(sprintf("Unique insect species             : %d\n",    n_distinct(insect_mass$species)))
+cat(sprintf("Unique insect species with mass: %d\n", length(unique(insect_mass$species[insect_mass$Trait=="mass"]))))
+cat(sprintf("Unique insect species with measured, not estimated, mass: %d\n", length(unique(insect_mass$species[insect_mass$Estimate=="No" & insect_mass$Trait=="mass"]))))
+```
+
+---
+
+# 6. Insect Dataset Exploration
+
+## 6.1 Taxonomic Breakdown
+
+```{r tax-summary-table}
+knitr::kable(
+  insect_mass %>%
+    group_by(order) %>%
+    summarise(
+      n_records = n(),
+      n_species = n_distinct(species),
+      n_families = n_distinct(family)
+    ) %>%
+    arrange(desc(n_species)),
+  caption = "Records and species richness per insect order"
+)
+```
+
+```{r order-barplot, fig.cap="Species richness per insect order (orders with ≥5 species shown)."}
+insect_mass %>%
+  group_by(order) %>%
+  summarise(n_species = n_distinct(species)) %>%
+  filter(n_species >= 5) %>%
+  ggplot(aes(x = reorder(order, n_species), y = n_species)) +
+  geom_col(fill = "forestgreen", alpha = 0.8) +
+  coord_flip() +
+  labs(x = NULL, y = "Number of species",
+       title = "Species richness by insect order (≥5 species)") +
+  theme_minimal(base_size = 11)
+```
+
+## 6.2 Body Mass Distribution
+
+```{r mass-dist, fig.cap="Log10 body mass distributions by order (mass records only, top 10 orders by record count)."}
+top_orders <- insect_mass %>%
+  filter(Trait == "mass") %>%
+  count(order, sort = TRUE) %>%
+  slice_head(n = 10) %>%
+  pull(order)
+
+insect_mass %>%
+  filter(Trait == "mass", order %in% top_orders) %>%
+  mutate(log_mass = log10(Value)) %>%
+  ggplot(aes(x = log_mass, fill = order)) +
+  geom_density(alpha = 0.55, colour = NA) +
+  facet_wrap(~order, scales = "free_y", ncol = 3) +
+  labs(x = "log10(body mass)", y = "Density",
+       title = "Body mass distributions across top 10 insect orders") +
+  theme_minimal(base_size = 10) +
+  theme(legend.position = "none")
+```
+
+## 6.3 Metric Standardisation Overview
+
+```{r metric-summary}
+knitr::kable(
+  insect_mass %>%
+    group_by(Trait, Metric) %>%
+    summarise(
+      n          = n(),
+      mean_value = round(mean(Value, na.rm = TRUE), 4),
+      median     = round(median(Value, na.rm = TRUE), 4),
+      sd         = round(sd(Value, na.rm = TRUE), 4),
+      min        = round(min(Value, na.rm = TRUE), 6),
+      max        = round(max(Value, na.rm = TRUE), 2),
+      .groups    = "drop"
+    ),
+  caption = "Summary statistics by trait and metric (pre-unit conversion)"
+)
+```
+
+## 6.4 Estimated vs. Measured Records
+
+```{r estimate-breakdown, fig.cap="Proportion of estimated vs. measured records per trait."}
+insect_mass %>%
+  filter(Estimate %in% c("Yes", "No")) %>%
+  count(Trait, Estimate) %>%
+  group_by(Trait) %>%
+  mutate(pct = n / sum(n) * 100) %>%
+  ggplot(aes(x = Trait, y = pct, fill = Estimate)) +
+  geom_col(position = "stack", alpha = 0.85, colour = "white") +
+  scale_fill_manual(values = c("No" = "steelblue", "Yes" = "firebrick")) +
+  labs(x = "Trait", y = "Percentage of records (%)",
+       fill = "Estimated?",
+       title = "Proportion of estimated vs. directly measured records") +
+  theme_minimal(base_size = 11)
+```
+
+---
+
+# 7. Session Information
+
+```{r session-info}
+sessionInfo()
+```
